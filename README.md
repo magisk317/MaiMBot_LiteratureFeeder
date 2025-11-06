@@ -45,6 +45,12 @@ MaiMBot_LiteratureFeeder/
 - 如需同时使用两种模式，调度器会按照最小的检查间隔运行；若仅定时模式生效，可调 `scheduler.check_interval_minutes` 控制轮询频率。
 - 调试命令默认关闭，可在 `[debug]` 下开启，并按需限制 `allow_user_ids`。
 
+### 命令参数
+
+- `--arxiv` / `--nature` 等：可在 `/lit preview` 或 `/lit force` 后追加 `--源标识` 来筛选特定数据源。
+  - 例如 `/lit preview --arxiv` 仅查看 arXiv 来源；`/lit force --nature` 仅推送名称或标签包含 “nature” 的源。
+  - 标识可匹配 `feeds` 配置中的 `type`、`label`、`name` 等字符串（不区分大小写）。
+
 ## 待补全事项
 
 - [ ] 实现真实的数据源抓取器（arXiv API、RSS、第三方接口等）

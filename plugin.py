@@ -46,12 +46,26 @@ logger = get_logger("maimbot_literature_feeder")
 CONFIG_VERSION = "0.2.0"
 
 
+def _extract_source_flags(message) -> List[str]:
+    """Parse command text for --source flags."""
+    text = ""
+    if hasattr(message, "processed_plain_text"):
+        text = message.processed_plain_text or ""
+    if not text and hasattr(message, "raw_message") and isinstance(message.raw_message, str):
+        text = message.raw_message
+    flags: List[str] = []
+    for token in text.strip().split():
+        if token.startswith("--") and len(token) > 2:
+            flags.append(token[2:].lower())
+    return flags
+
+
 class LiteraturePreviewCommand(BaseCommand):
     """Manual command: preview the next scheduled delivery."""
 
     command_name = "literature_preview"
     command_description = "预览下一轮推送的文献摘要"
-    command_pattern = r"^(?:[/#])?(?:lit|litfeed)(?:\s+preview)?$"
+    command_pattern = r"^(?:[/#])?(?:lit|litfeed)(?:\s+preview)?(?:\s+--[^\s]+)*$"
     command_help = "使用 /lit preview 预览下一轮文献推送"
     intercept_message = True
 
@@ -59,7 +73,8 @@ class LiteraturePreviewCommand(BaseCommand):
         """Send a placeholder preview until the fetch pipeline is in place."""
         plugin = getattr(self, "plugin", None)
         if plugin is not None and hasattr(plugin, "build_preview"):
-            preview_text = await plugin.build_preview(manual_trigger=True)
+            source_flags = _extract_source_flags(self.message)
+            preview_text = await plugin.build_preview(manual_trigger=True, source_flags=source_flags)
         else:
             preview_text = None
 
@@ -76,7 +91,7 @@ class LiteratureForceDispatchCommand(BaseCommand):
 
     command_name = "literature_force_dispatch"
     command_description = "强制触发一次文献推送（忽略去重缓存）"
-    command_pattern = r"^(?:[/#])?(?:lit|litfeed)\s+(?:force|dispatch)\s*$"
+    command_pattern = r"^(?:[/#])?(?:lit|litfeed)\s+(?:force|dispatch)(?:\s+--[^\s]+)*$"
     command_help = "使用 /lit force 强制推送一次最新文献"
     intercept_message = True
 
@@ -102,7 +117,12 @@ class LiteratureForceDispatchCommand(BaseCommand):
             return False, "not_authorized", True
 
         await self.send_text("⏱️ 正在抓取文献并强制推送，请稍候…")
-        success, detail = await plugin.manual_dispatch(ignore_seen=True, reason="manual")
+        source_flags = _extract_source_flags(self.message)
+        success, detail = await plugin.manual_dispatch(
+            ignore_seen=True,
+            reason="manual",
+            source_flags=source_flags,
+        )
         if success:
             await self.send_text(f"✅ 强制推送完成：{detail}")
             return True, "force_sent", True
@@ -357,7 +377,11 @@ class LiteratureFeederPlugin(BasePlugin):
             if not trigger_reason:
                 return
 
-            success, detail = await self._execute_dispatch(ignore_seen=False, reason=trigger_reason)
+            success, detail = await self._execute_dispatch(
+                ignore_seen=False,
+                reason=trigger_reason,
+                source_flags=None,
+            )
             if success:
                 logger.info("成功推送文献更新（%s）: %s", trigger_reason, detail)
             else:
@@ -368,9 +392,19 @@ class LiteratureFeederPlugin(BasePlugin):
             else:
                 logger.error(f"调度器循环失败: {exc}")
 
-    async def manual_dispatch(self, *, ignore_seen: bool, reason: str) -> Tuple[bool, str]:
+    async def manual_dispatch(
+        self,
+        *,
+        ignore_seen: bool,
+        reason: str,
+        source_flags: Optional[List[str]] = None,
+    ) -> Tuple[bool, str]:
         """Manual dispatch for commands/tests."""
-        return await self._execute_dispatch(ignore_seen=ignore_seen, reason=reason)
+        return await self._execute_dispatch(
+            ignore_seen=ignore_seen,
+            reason=reason,
+            source_flags=source_flags,
+        )
 
     def _check_schedule_trigger(self) -> Optional[str]:
         """Determine whether the scheduler should fire this cycle."""
@@ -428,10 +462,19 @@ class LiteratureFeederPlugin(BasePlugin):
         """Return current time in configured timezone."""
         return datetime.now(self._timezone)
 
-    async def _execute_dispatch(self, *, ignore_seen: bool, reason: str) -> Tuple[bool, str]:
+    async def _execute_dispatch(
+        self,
+        *,
+        ignore_seen: bool,
+        reason: str,
+        source_flags: Optional[List[str]] = None,
+    ) -> Tuple[bool, str]:
         """Fetch, format, and deliver a batch of literature updates."""
-        sources = self.get_config("sources.feeds", []) or []
-        if not sources:
+        sources_cfg = self._select_sources(source_flags)
+        if not sources_cfg:
+            if source_flags:
+                flags_text = ", ".join(source_flags)
+                return False, f"未找到匹配的数据源：{flags_text}"
             return False, "未配置文献来源"
 
         targets = list(self.get_config("delivery.targets", []) or [])
@@ -446,7 +489,7 @@ class LiteratureFeederPlugin(BasePlugin):
         include_tags = bool(self.get_config("delivery.include_tags", True))
         summary_style = str(self.get_config("delivery.summary_style", "bullet")).lower()
 
-        collected_items = await self._collect_from_sources()
+        collected_items = await self._collect_from_sources(sources_cfg)
         if not collected_items:
             return False, "未从任何来源获取到文献条目"
 
@@ -475,10 +518,57 @@ class LiteratureFeederPlugin(BasePlugin):
         await self._persist_seen_cache()
         return True, f"推送 {len(selected_items)} 条到 {len(targets)} 个目标（{reason}）"
 
-    async def _collect_from_sources(self) -> List[Dict[str, Any]]:
+    def _select_sources(self, flags: Optional[List[str]]) -> List[Dict[str, Any]]:
+        """Select configured sources matching the provided flags."""
+        sources = self.get_config("sources.feeds", []) or []
+        if not flags:
+            return list(sources)
+
+        normalized = [flag.lower() for flag in flags if flag]
+        if not normalized:
+            return list(sources)
+
+        selected: List[Dict[str, Any]] = []
+        for feed in sources:
+            tags = set()
+            feed_type = str(feed.get("type", "")).lower()
+            if feed_type:
+                tags.add(feed_type)
+                tags.add(feed_type.replace("_", "-"))
+
+            label = feed.get("label")
+            if label:
+                lower_label = str(label).lower()
+                tags.add(lower_label)
+                for part in re.split(r"[^a-z0-9]+", lower_label):
+                    if part:
+                        tags.add(part)
+
+            name = feed.get("name")
+            if name:
+                lower_name = str(name).lower()
+                tags.add(lower_name)
+                for part in re.split(r"[^a-z0-9]+", lower_name):
+                    if part:
+                        tags.add(part)
+
+            key = feed.get("key")
+            if key:
+                tags.add(str(key).lower())
+
+            slug = feed.get("slug")
+            if slug:
+                tags.add(str(slug).lower())
+
+            if any(flag in tags for flag in normalized):
+                selected.append(feed)
+
+        return selected
+
+    async def _collect_from_sources(self, feeds: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
         """Fetch and normalise entries from all configured sources."""
-        feeds = self.get_config("sources.feeds", []) or []
-        if not feeds:
+        feeds_to_use = feeds if feeds is not None else (self.get_config("sources.feeds", []) or [])
+        if not feeds_to_use:
             return []
 
         timeout_seconds = max(1, int(self.get_config("sources.http_timeout", 20)))
@@ -486,7 +576,7 @@ class LiteratureFeederPlugin(BasePlugin):
         timeout = httpx.Timeout(timeout_seconds, connect=timeout_seconds)
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            for feed_cfg in feeds:
+            for feed_cfg in feeds_to_use:
                 feed_type = str(feed_cfg.get("type", "rss")).lower()
                 try:
                     if feed_type == "arxiv":
@@ -824,9 +914,17 @@ class LiteratureFeederPlugin(BasePlugin):
         except Exception as exc:
             logger.warning("保存去重缓存失败: %s", exc)
 
-    async def build_preview(self, manual_trigger: bool = False) -> str:
+    async def build_preview(
+        self,
+        manual_trigger: bool = False,
+        source_flags: Optional[List[str]] = None,
+    ) -> str:
         """Construct a human readable preview based on current configuration."""
-        sources = self.get_config("sources.feeds", [])
+        sources = self._select_sources(source_flags)
+        if source_flags and not sources:
+            flags_text = ", ".join(source_flags)
+            return f"⚠️ 未找到匹配的数据源：{flags_text}"
+
         interval = int(self.get_config("scheduler.interval_minutes", 120))
         specific_times = self.get_config("scheduler.specific_times", [])
         timezone_name = self.get_config("scheduler.timezone", "Asia/Shanghai")
@@ -845,6 +943,9 @@ class LiteratureFeederPlugin(BasePlugin):
             f"• 摘要模式：{summary_style}",
             f"• 数据源数量：{len(sources)}",
         ]
+
+        if source_flags:
+            lines.append(f"• 指定来源：{', '.join(source_flags)}")
 
         if sources:
             lines.append("\n➡️ 已配置的数据源：")
