@@ -1,8 +1,8 @@
 {
   "manifest_version": 1,
   "name": "MaiMBot Literature Feeder",
-  "version": "0.2.0",
-  "description": "聚合最新学术文献并向指定会话推送摘要的插件骨架。",
+  "version": "0.3.0",
+  "description": "聚合最新学术文献并向指定会话推送摘要的完整插件。",
   "author": {
     "name": "MaiMBot Community",
     "url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder"
@@ -36,13 +36,19 @@
         "name": "literature_force_dispatch",
         "description": "强制触发一次文献推送（忽略去重）",
         "pattern": "/lit force"
+      },
+      {
+        "type": "command",
+        "name": "literature_search",
+        "description": "根据关键词搜索指定来源的最新文献",
+        "pattern": "/lit search"
       }
     ],
     "features": [
       "可配置的学术来源列表",
       "可插拔的LLM摘要策略",
       "定时推送调度框架（间隔模式与定时模式）",
-      "手动预览与强制推送命令"
+      "手动预览、搜索与强制推送命令"
     ]
   }
 }

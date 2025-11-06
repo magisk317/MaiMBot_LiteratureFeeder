@@ -3,7 +3,7 @@
 
 [plugin]
 enabled = true
-config_version = "0.2.0"
+config_version = "0.3.0"
 debug = false
 
 [scheduler]
@@ -37,6 +37,12 @@ fallback_target = ""          # 可选备用目标，没有可留空
 include_tags = true           # 推送内容是否带上来源标签
 summary_style = "bullet"      # plain / bullet / llm
 llm_model = ""                # 如需 LLM 摘要，在此填入模型名称（OpenAI 兼容）
+
+[search]
+max_results = 5
+match_title = true
+match_summary = true
+match_authors = false
 
 [debug]
 enable_force_command = false

@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - best effort import
 
 logger = get_logger("maimbot_literature_feeder")
 
-CONFIG_VERSION = "0.2.0"
+CONFIG_VERSION = "0.3.0"
 
 
 def _extract_source_flags(message) -> List[str]:
@@ -78,10 +78,7 @@ class LiteraturePreviewCommand(BaseCommand):
         else:
             preview_text = None
 
-        message = (
-            preview_text
-            or "📚 文献推送插件就绪。当前为骨架实现，后续将接入真实的学术源与摘要流程。"
-        )
+        message = preview_text or "📚 文献推送插件就绪，可随时查看配置与来源情况。"
         await self.send_text(message)
         return True, "preview_sent", True
 
@@ -131,6 +128,55 @@ class LiteratureForceDispatchCommand(BaseCommand):
         return False, "force_not_sent", True
 
 
+class LiteratureSearchCommand(BaseCommand):
+    """Manual command: search literature by keywords."""
+
+    command_name = "literature_search"
+    command_description = "基于关键词搜索学术文献"
+    command_pattern = r"^(?:[/#])?(?:lit|litfeed)\s+search\b.*$"
+    command_help = "使用 /lit search 关键词 [--source] 执行搜索"
+    intercept_message = True
+
+    def _extract_keywords(self) -> List[str]:
+        text = ""
+        if hasattr(self.message, "processed_plain_text"):
+            text = self.message.processed_plain_text or ""
+        if not text and hasattr(self.message, "raw_message") and isinstance(self.message.raw_message, str):
+            text = self.message.raw_message
+
+        tokens = [tok for tok in text.strip().split() if tok]
+        if not tokens:
+            return []
+
+        try:
+            search_index = next(i for i, tok in enumerate(tokens) if tok.lower() == "search")
+        except StopIteration:
+            return []
+
+        keywords = []
+        for token in tokens[search_index + 1 :]:
+            if token.startswith("--"):
+                continue
+            keywords.append(token)
+        return keywords
+
+    async def execute(self) -> Tuple[bool, Optional[str], bool]:
+        plugin = getattr(self, "plugin", None)
+        if not plugin:
+            await self.send_text("❌ 插件实例未加载，无法执行。")
+            return False, "plugin_missing", True
+
+        keywords = self._extract_keywords()
+        if not keywords:
+            await self.send_text("❌ 请提供搜索关键词，例如 /lit search machine learning")
+            return False, "missing_keywords", True
+
+        source_flags = _extract_source_flags(self.message)
+        success, message = await plugin.search_literature(keywords, source_flags)
+        await self.send_text(message)
+        return success, ("ok" if success else "no_results"), True
+
+
 class LiteratureSchedulerEventHandler(BaseEventHandler):
     """Kick off the background scheduler once MaiMBot is ready."""
 
@@ -178,6 +224,7 @@ class LiteratureFeederPlugin(BasePlugin):
         "scheduler": "推送调度设置",
         "sources": "文献来源配置",
         "delivery": "推送目标与格式设置",
+        "search": "搜索与调试设置",
         "debug": "调试与开发配置",
     }
 
@@ -246,6 +293,13 @@ class LiteratureFeederPlugin(BasePlugin):
                 description="可选的LLM摘要模型（OpenAI兼容格式）",
             ),
         },
+        "search": {
+            "_section_description": "\n# 搜索相关设置",
+            "max_results": ConfigField(int, default=5, description="搜索返回的最大条目数"),
+            "match_title": ConfigField(bool, default=True, description="是否匹配标题"),
+            "match_summary": ConfigField(bool, default=True, description="是否匹配摘要"),
+            "match_authors": ConfigField(bool, default=False, description="是否匹配作者信息"),
+        },
         "debug": {
             "_section_description": "\n# 调试设置",
             "enable_force_command": ConfigField(bool, default=False, description="是否启用强制推送调试命令 /lit force"),
@@ -291,6 +345,7 @@ class LiteratureFeederPlugin(BasePlugin):
                 (LiteratureSchedulerEventHandler.get_handler_info(), LiteratureSchedulerEventHandler)
             )
         components.append((LiteraturePreviewCommand.get_command_info(), LiteraturePreviewCommand))
+        components.append((LiteratureSearchCommand.get_command_info(), LiteratureSearchCommand))
         if self.get_config("debug.enable_force_command", False):
             components.append((LiteratureForceDispatchCommand.get_command_info(), LiteratureForceDispatchCommand))
         return components
@@ -517,6 +572,60 @@ class LiteratureFeederPlugin(BasePlugin):
 
         await self._persist_seen_cache()
         return True, f"推送 {len(selected_items)} 条到 {len(targets)} 个目标（{reason}）"
+
+    async def search_literature(
+        self,
+        keywords: List[str],
+        source_flags: Optional[List[str]] = None,
+    ) -> Tuple[bool, str]:
+        """Search configured sources by keywords."""
+        keywords_clean = [kw.strip() for kw in keywords if kw.strip()]
+        if not keywords_clean:
+            return False, "❌ 未提供有效的搜索关键词。"
+
+        sources_cfg = self._select_sources(source_flags)
+        if not sources_cfg:
+            if source_flags:
+                return False, f"⚠️ 未找到匹配的数据源：{', '.join(source_flags)}"
+            return False, "⚠️ 未配置可用的数据源。"
+
+        items = await self._collect_from_sources(sources_cfg)
+        if not items:
+            return False, "⚠️ 未从指定来源获取到任何条目。"
+
+        max_results = max(1, int(self.get_config("search.max_results", 5)))
+        match_title = bool(self.get_config("search.match_title", True))
+        match_summary = bool(self.get_config("search.match_summary", True))
+        match_authors = bool(self.get_config("search.match_authors", False))
+
+        keywords_lower = [kw.lower() for kw in keywords_clean]
+
+        def matches(entry: Dict[str, Any]) -> bool:
+            texts: List[str] = []
+            if match_title:
+                texts.append(entry.get("title", ""))
+            if match_summary:
+                texts.append(entry.get("summary", ""))
+            if match_authors:
+                texts.append(entry.get("authors", ""))
+            if not texts:
+                texts.append(entry.get("title", ""))
+            combined = " ".join(texts).lower()
+            return all(kw in combined for kw in keywords_lower)
+
+        filtered = [entry for entry in items if matches(entry)]
+        if not filtered:
+            return False, "⚠️ 未找到匹配的文献，请尝试调整关键词。"
+
+        limited = filtered[:max_results]
+        message = self._format_search_results(
+            limited,
+            keywords_clean,
+            include_tags=bool(self.get_config("delivery.include_tags", True)),
+            summary_style=str(self.get_config("delivery.summary_style", "bullet")).lower(),
+            source_flags=source_flags,
+        )
+        return True, message
 
     def _select_sources(self, flags: Optional[List[str]]) -> List[Dict[str, Any]]:
         """Select configured sources matching the provided flags."""
@@ -962,3 +1071,45 @@ class LiteratureFeederPlugin(BasePlugin):
     async def on_unload(self) -> None:
         """Compatibility hook for plugin manager variants."""
         await self.stop_scheduler()
+
+    def _format_search_results(
+        self,
+        items: List[Dict[str, Any]],
+        keywords: List[str],
+        *,
+        include_tags: bool,
+        summary_style: str,
+        source_flags: Optional[List[str]] = None,
+    ) -> str:
+        """Format search results for presentation."""
+        query = " ".join(keywords)
+        header = f"🔎 文献搜索：{query}" if query else "🔎 文献搜索结果"
+        if source_flags:
+            header += f"（来源：{', '.join(source_flags)}）"
+
+        lines: List[str] = [header, ""]
+        for idx, item in enumerate(items, 1):
+            title = item.get("title") or "未命名条目"
+            lines.append(f"{idx}. {title}")
+
+            meta_parts: List[str] = []
+            if include_tags and item.get("label"):
+                meta_parts.append(str(item["label"]))
+            if item.get("authors"):
+                meta_parts.append(str(item["authors"]))
+            if meta_parts:
+                lines.append(f"   来源：{' | '.join(meta_parts)}")
+
+            summary = item.get("summary")
+            if summary:
+                formatted_summary = self._format_summary(summary, summary_style)
+                if formatted_summary:
+                    lines.append(f"   摘要：{formatted_summary}")
+
+            link = item.get("link")
+            if link:
+                lines.append(f"   链接：{link}")
+
+            lines.append("")
+
+        return "\n".join(lines).strip()
