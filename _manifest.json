@@ -1,7 +1,8 @@
 {
   "manifest_version": 1,
+  "package": "maimbot_literature_feeder",
   "name": "MaiMBot Literature Feeder",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "聚合最新学术文献并向指定会话推送摘要的完整插件。",
   "author": {
     "name": "MaiMBot Community",
@@ -13,9 +14,13 @@
   },
   "homepage_url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder",
   "repository_url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder",
+  "documentation_url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder#readme",
+  "issues_url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder/issues",
   "keywords": ["literature", "academic", "rss", "scheduler"],
   "categories": ["Knowledge", "Automation"],
   "default_locale": "zh-CN",
+  "entry_module": "plugin",
+  "entry_class": "LiteratureFeederPlugin",
   "plugin_info": {
     "is_built_in": false,
     "plugin_type": "integration",
