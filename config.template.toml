@@ -3,7 +3,7 @@
 
 [plugin]
 enabled = true
-config_version = "0.3.0"
+config_version = "0.4.0"
 debug = false
 
 [scheduler]
@@ -17,6 +17,10 @@ specific_times = [
 ]                           # 每天按北京时间定时推送，留空表示不使用
 timezone = "Asia/Shanghai"   # 定时触发使用的时区
 check_interval_minutes = 1   # specific_times 生效时的检查频率
+quiet_hours = [
+  "01:00-08:00",
+]                           # 静默时间段，避免打扰，可配置多个区间
+on_the_hour = false         # 是否在每个整点自动触发一次推送
 
 [sources]
 feeds = [

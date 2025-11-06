@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "MaiMBot Literature Feeder",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "聚合最新学术文献并向指定会话推送摘要的完整插件。",
   "author": {
     "name": "MaiMBot Community",

@@ -44,6 +44,8 @@ MaiMBot_LiteratureFeeder/
 - **间隔模式**：`scheduler.interval_minutes` > 0 时按固定间隔推送。
 - **定时模式**：`scheduler.specific_times = ["09:30","18:00"]` 可设定北京时间的固定触发点。
 - **双模式并行**：同时配置时会按最小检查间隔运行；`scheduler.check_interval_minutes` 控制定时模式轮询频率。
+- **静默时间段**：`scheduler.quiet_hours = ["01:00-08:00"]` 可避免凌晨推送打扰。
+- **整点触发**：`scheduler.on_the_hour = true` 可在每个整点自动触发一次推送，与其他模式叠加使用。
 - `[debug]` 可开启 `/lit force` 调试命令，并限制允许使用的账号。
 
 ## 命令与参数
@@ -59,4 +61,3 @@ MaiMBot_LiteratureFeeder/
 - 推送格式适配更多渠道（如频道、邮件、Webhook）。
 
 欢迎提交 Issue 或 PR，共同完善麦麦的学术情报系统。
-

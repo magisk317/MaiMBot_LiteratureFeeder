@@ -43,7 +43,7 @@ except Exception:  # pragma: no cover - best effort import
 
 logger = get_logger("maimbot_literature_feeder")
 
-CONFIG_VERSION = "0.3.0"
+CONFIG_VERSION = "0.4.0"
 
 
 def _extract_source_flags(message) -> List[str]:
@@ -60,6 +60,18 @@ def _extract_source_flags(message) -> List[str]:
     return flags
 
 
+def _resolve_plugin_instance() -> Optional["LiteratureFeederPlugin"]:
+    """Fetch plugin instance from plugin manager as a fallback."""
+    try:
+        from src.plugin_system.core.plugin_manager import plugin_manager
+    except Exception:
+        return None
+    try:
+        return plugin_manager.get_plugin_instance("maimbot_literature_feeder")
+    except Exception:
+        return None
+
+
 class LiteraturePreviewCommand(BaseCommand):
     """Manual command: preview the next scheduled delivery."""
 
@@ -72,6 +84,8 @@ class LiteraturePreviewCommand(BaseCommand):
     async def execute(self) -> Tuple[bool, Optional[str], bool]:
         """Send a placeholder preview until the fetch pipeline is in place."""
         plugin = getattr(self, "plugin", None)
+        if plugin is None:
+            plugin = _resolve_plugin_instance()
         if plugin is not None and hasattr(plugin, "build_preview"):
             source_flags = _extract_source_flags(self.message)
             preview_text = await plugin.build_preview(manual_trigger=True, source_flags=source_flags)
@@ -94,6 +108,13 @@ class LiteratureForceDispatchCommand(BaseCommand):
 
     async def execute(self) -> Tuple[bool, Optional[str], bool]:
         plugin = getattr(self, "plugin", None)
+        logger.debug(
+            "[ForceCommand] received request, plugin=%s, config_debug=%s",
+            type(plugin).__name__ if plugin else None,
+            self.get_config("debug.enable_force_command", False),
+        )
+        if plugin is None:
+            plugin = _resolve_plugin_instance()
         if not plugin:
             await self.send_text("❌ 插件实例未加载，无法执行。")
             return False, "plugin_missing", True
@@ -119,6 +140,12 @@ class LiteratureForceDispatchCommand(BaseCommand):
             ignore_seen=True,
             reason="manual",
             source_flags=source_flags,
+        )
+        logger.debug(
+            "[ForceCommand] executed manual dispatch result=%s detail=%s flags=%s",
+            success,
+            detail,
+            source_flags,
         )
         if success:
             await self.send_text(f"✅ 强制推送完成：{detail}")
@@ -162,6 +189,8 @@ class LiteratureSearchCommand(BaseCommand):
 
     async def execute(self) -> Tuple[bool, Optional[str], bool]:
         plugin = getattr(self, "plugin", None)
+        if plugin is None:
+            plugin = _resolve_plugin_instance()
         if not plugin:
             await self.send_text("❌ 插件实例未加载，无法执行。")
             return False, "plugin_missing", True
@@ -247,6 +276,8 @@ class LiteratureFeederPlugin(BasePlugin):
             "specific_times": ConfigField(list, default=[], description="每日固定时间推送（北京时间，24小时制，如 \"16:00\"）"),
             "timezone": ConfigField(str, default="Asia/Shanghai", description="定时推送使用的时区"),
             "check_interval_minutes": ConfigField(int, default=1, description="调度器检查间隔（分钟），针对 fixed time 模式"),
+            "quiet_hours": ConfigField(list, default=["01:00-08:00"], description="静默时间段，避免在此时间范围内推送，可配置多个区间"),
+            "on_the_hour": ConfigField(bool, default=False, description="是否在每个整点触发一次推送"),
         },
         "sources": {
             "_section_description": "\n# 数据源设置",
@@ -324,6 +355,7 @@ class LiteratureFeederPlugin(BasePlugin):
         self._llm_warning_emitted = False
         self._last_interval_run_ts: float = 0.0
         self._last_fixed_run_key: Optional[str] = None
+        self._last_hour_run_key: Optional[str] = None
 
         tz_name = str(self.get_config("scheduler.timezone", "Asia/Shanghai") or "Asia/Shanghai")
         try:
@@ -471,9 +503,15 @@ class LiteratureFeederPlugin(BasePlugin):
 
         interval_minutes = int(self.get_config("scheduler.interval_minutes", 120))
         specific_times = self._parse_specific_times()
+        every_hour = bool(self.get_config("scheduler.on_the_hour", False))
 
         triggered_by_interval = False
         triggered_by_fixed_time = False
+        triggered_by_hourly = False
+
+        if self._in_quiet_hours(now):
+            logger.debug("当前处于静默时间段，跳过调度触发")
+            return None
 
         if interval_minutes > 0:
             if now_ts - self._last_interval_run_ts >= interval_minutes * 60:
@@ -487,8 +525,16 @@ class LiteratureFeederPlugin(BasePlugin):
                 triggered_by_fixed_time = True
                 self._last_fixed_run_key = current_key
 
+        if every_hour and now.minute == 0:
+            current_hour_key = now.strftime("%Y%m%d%H")
+            if current_hour_key != self._last_hour_run_key:
+                triggered_by_hourly = True
+                self._last_hour_run_key = current_hour_key
+
         if triggered_by_fixed_time:
             return "fixed"
+        if triggered_by_hourly:
+            return "hourly"
         if triggered_by_interval:
             return "interval"
         return None
@@ -512,6 +558,44 @@ class LiteratureFeederPlugin(BasePlugin):
             except Exception:
                 logger.warning("忽略无效的定时配置: %s", entry)
         return sorted(set(parsed))
+
+    def _parse_quiet_hours(self) -> List[tuple[int, int]]:
+        """Parse quiet hour ranges into start/end minute tuples."""
+        quiet_cfg = self.get_config("scheduler.quiet_hours", []) or []
+        ranges: List[tuple[int, int]] = []
+        for entry in quiet_cfg:
+            if not entry:
+                continue
+            value = str(entry).strip()
+            try:
+                start_str, end_str = value.split("-")
+                sh, sm = map(int, start_str.split(":"))
+                eh, em = map(int, end_str.split(":"))
+                if not (0 <= sh < 24 and 0 <= eh < 24 and 0 <= sm < 60 and 0 <= em < 60):
+                    raise ValueError
+                start = sh * 60 + sm
+                end = eh * 60 + em
+                ranges.append((start, end))
+            except Exception:
+                logger.warning("忽略无效的静默时间段配置: %s", entry)
+        return ranges
+
+    def _in_quiet_hours(self, now: datetime) -> bool:
+        """Return True if current time falls into any configured quiet range."""
+        ranges = self._parse_quiet_hours()
+        if not ranges:
+            return False
+        current_minute = now.hour * 60 + now.minute
+        for start, end in ranges:
+            if start == end:
+                continue
+            if start < end:
+                if start <= current_minute < end:
+                    return True
+            else:
+                if current_minute >= start or current_minute < end:
+                    return True
+        return False
 
     def _now(self) -> datetime:
         """Return current time in configured timezone."""
@@ -1037,6 +1121,7 @@ class LiteratureFeederPlugin(BasePlugin):
         interval = int(self.get_config("scheduler.interval_minutes", 120))
         specific_times = self.get_config("scheduler.specific_times", [])
         timezone_name = self.get_config("scheduler.timezone", "Asia/Shanghai")
+        on_the_hour = bool(self.get_config("scheduler.on_the_hour", False))
         targets = self.get_config("delivery.targets", [])
         summary_style = self.get_config("delivery.summary_style", "bullet")
 
@@ -1048,6 +1133,7 @@ class LiteratureFeederPlugin(BasePlugin):
             header,
             f"• 调度间隔：{'关闭' if interval <= 0 else f'每 {interval} 分钟'}",
             f"• 定时触发：{specific_times or '未配置'}（时区：{timezone_name}）",
+            f"• 整点触发：{'开启' if on_the_hour else '关闭'}",
             f"• 推送目标：{targets or '未配置'}",
             f"• 摘要模式：{summary_style}",
             f"• 数据源数量：{len(sources)}",
