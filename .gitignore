@@ -1,0 +1,18 @@
+# Runtime caches and generated artefacts
+data/*
+!data/.gitkeep
+log/
+logs/
+*.log
+
+# Local configuration overrides
+config/
+*.local.toml
+*.local.json
+config.toml
+
+# Virtual environments or editor metadata (common offenders)
+.venv/
+.env
+.idea/
+__pycache__/

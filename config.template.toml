@@ -1,0 +1,45 @@
+# MaiMBot Literature Feeder configuration template
+# 复制此文件为 config.toml，然后按需修改。
+
+[plugin]
+enabled = true
+config_version = "0.2.0"
+debug = false
+
+[scheduler]
+enable = true
+interval_minutes = 120        # 每次推送的时间间隔（<=0 关闭）
+startup_delay_seconds = 10    # 插件启动后延迟多久启动调度
+max_batch_size = 5            # 单次推送的最大文献条目数
+specific_times = [
+  # "09:00",
+  # "18:30",
+]                           # 每天按北京时间定时推送，留空表示不使用
+timezone = "Asia/Shanghai"   # 定时触发使用的时区
+check_interval_minutes = 1   # specific_times 生效时的检查频率
+
+[sources]
+feeds = [
+  # arXiv 示例
+  { type = "arxiv", query = "cs.CL", max_items = 5, label = "arXiv: Computation and Language" },
+  # RSS 示例
+  { type = "rss", url = "https://www.nature.com/nature.rss", max_items = 3, label = "Nature 最新文章" }
+]
+http_timeout = 20             # 网络请求超时时间（秒）
+cache_hours = 6               # 缓存有效期（小时）
+
+[delivery]
+targets = [
+  # "group:123456789",       # QQ 群举例
+  # "private:987654321"      # 私聊举例
+]
+fallback_target = ""          # 可选备用目标，没有可留空
+include_tags = true           # 推送内容是否带上来源标签
+summary_style = "bullet"      # plain / bullet / llm
+llm_model = ""                # 如需 LLM 摘要，在此填入模型名称（OpenAI 兼容）
+
+[debug]
+enable_force_command = false
+allow_user_ids = [
+  # "123456789",
+]                           # 限制可执行 /lit force 的用户 ID，留空为不限制

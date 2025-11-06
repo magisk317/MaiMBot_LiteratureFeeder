@@ -1,0 +1,48 @@
+{
+  "manifest_version": 1,
+  "name": "MaiMBot Literature Feeder",
+  "version": "0.2.0",
+  "description": "聚合最新学术文献并向指定会话推送摘要的插件骨架。",
+  "author": {
+    "name": "MaiMBot Community",
+    "url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder"
+  },
+  "license": "MIT",
+  "host_application": {
+    "min_version": "0.11.0"
+  },
+  "homepage_url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder",
+  "repository_url": "https://github.com/magisk317/MaiMBot_LiteratureFeeder",
+  "keywords": ["literature", "academic", "rss", "scheduler"],
+  "categories": ["Knowledge", "Automation"],
+  "default_locale": "zh-CN",
+  "plugin_info": {
+    "is_built_in": false,
+    "plugin_type": "integration",
+    "components": [
+      {
+        "type": "event_handler",
+        "name": "literature_scheduler",
+        "description": "启动文献推送定时器"
+      },
+      {
+        "type": "command",
+        "name": "literature_preview",
+        "description": "预览当前配置下的文献推送计划",
+        "pattern": "/lit preview"
+      },
+      {
+        "type": "command",
+        "name": "literature_force_dispatch",
+        "description": "强制触发一次文献推送（忽略去重）",
+        "pattern": "/lit force"
+      }
+    ],
+    "features": [
+      "可配置的学术来源列表",
+      "可插拔的LLM摘要策略",
+      "定时推送调度框架（间隔模式与定时模式）",
+      "手动预览与强制推送命令"
+    ]
+  }
+}
